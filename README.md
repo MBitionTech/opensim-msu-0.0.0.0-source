@@ -1,5 +1,15 @@
 Welcome to OpenSimulator (OpenSim for short)!
 
+# Morgan State University - Research Group
+This implementaion of OpenSimulator is supported by the MSU Research Group.
+It is intended to include specific features beneficial to the research group's
+design goals.  This version branches off of the original source code for
+OpenSimulator 0.9.2.2 (http://opensimulator.org/dist/opensim-0.9.2.2-source.zip)
+
+Features added:
+	- Provide functionality allowing in-world objects to compile and
+	  execute Python3 code in their scripts. (Added 12/15/2023)
+ 
 # Overview
 
 OpenSim is a BSD Licensed Open Source project to develop a functioning

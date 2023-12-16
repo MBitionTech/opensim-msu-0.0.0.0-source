@@ -40,6 +40,10 @@ using log4net;
 using OpenSim.Region.Framework.Interfaces;
 using OpenSim.Region.ScriptEngine.Interfaces;
 using OpenMetaverse;
+using System.Diagnostics;
+using OpenSim.Region.ScriptEngine.Shared.ScriptBase;
+using static System.Net.Mime.MediaTypeNames;
+using System.Text.RegularExpressions;
 
 namespace OpenSim.Region.ScriptEngine.Shared.CodeTools
 {
@@ -58,7 +62,8 @@ namespace OpenSim.Region.ScriptEngine.Shared.CodeTools
         {
             lsl = 0,
             cs = 1,
-            vb = 2
+            vb = 2,
+			py = 3
         }
 
         /// <summary>
@@ -120,6 +125,7 @@ namespace OpenSim.Region.ScriptEngine.Shared.CodeTools
             }
 
             // Map name and enum type of our supported languages
+            LanguageMapping.Add(enumCompileType.py.ToString(), enumCompileType.py);
             LanguageMapping.Add(enumCompileType.cs.ToString(), enumCompileType.cs);
             LanguageMapping.Add(enumCompileType.vb.ToString(), enumCompileType.vb);
             LanguageMapping.Add(enumCompileType.lsl.ToString(), enumCompileType.lsl);
@@ -191,6 +197,7 @@ namespace OpenSim.Region.ScriptEngine.Shared.CodeTools
                 try
                 {
                     Directory.CreateDirectory(ScriptEnginesPath);
+					m_log.Info("[Compiler]: Created ScriptEngine directory \"" + ScriptEnginesPath);
                 }
                 catch (Exception ex)
                 {
@@ -205,6 +212,8 @@ namespace OpenSim.Region.ScriptEngine.Shared.CodeTools
                 {
                     Directory.CreateDirectory(Path.Combine(ScriptEnginesPath,
                         m_scriptEngine.World.RegionInfo.RegionID.ToString()));
+                    m_log.Info("[Compiler]: Created ScriptEngine directory \"" + Path.Combine(ScriptEnginesPath,
+                                            m_scriptEngine.World.RegionInfo.RegionID.ToString()));
                 }
                 catch (Exception ex)
                 {
@@ -303,6 +312,15 @@ namespace OpenSim.Region.ScriptEngine.Shared.CodeTools
 
             enumCompileType language = DefaultCompileLanguage;
 
+            if ((source.StartsWith("//py", true, CultureInfo.InvariantCulture)) ||
+                (source.StartsWith("##py", true, CultureInfo.InvariantCulture)))
+            {
+                language = enumCompileType.py;
+                // We need to remove //py (and ##py also, just for consistency).
+				// Python code won't execute with //py
+
+                source = source.Substring(4, source.Length - 4);
+            }
             if (source.StartsWith("//c#", true, CultureInfo.InvariantCulture))
                 language = enumCompileType.cs;
             if (source.StartsWith("//vb", true, CultureInfo.InvariantCulture))
@@ -365,8 +383,73 @@ namespace OpenSim.Region.ScriptEngine.Shared.CodeTools
             }
             else
             {
+				string pythonSrcFileName = string.Empty;
+				int useAltEvents = 0;
+				if (language == enumCompileType.py) {
+					pythonSrcFileName = Path.GetFileNameWithoutExtension(assembly).Replace("_compiled_", "_source_") +
+                                        "." + language.ToString();
+				}
+				
+                bool workdirCreated = false;
+                string workingDirectory = string.Empty;
                 switch (language)
                 {
+                    case enumCompileType.py:
+
+                        //m_log.Debug("[Python Source]: Object ID - '" + asset + "'\n");
+                        //m_log.Debug("[Python Source]: Assembly - '" + assembly + "'\n");
+
+                        // Step 1: create new Regex.
+                        Regex regex = new Regex(@"XX_CREATEWORKDIR~(.*)_XX");
+
+                        // Step 2: call Match on Regex instance.
+                        Match match = regex.Match(source);
+
+                        // Step 3: test for Success.
+                        if (match.Success)
+                        {
+                            workingDirectory = match.Groups[1].Value;
+                            m_log.Debug("[Compiler]: workingDirectory - '" + workingDirectory + "'\n");
+                        }
+
+                        // Create a work directory for the object if necessary
+                        if (source.Contains("XX_CREATEWORKDIR~" + workingDirectory + "_XX")) {
+                            source = source.Replace("XX_CREATEWORKDIR~" + workingDirectory + "_XX", "");
+                            if(!Directory.Exists(workingDirectory)) {
+                                Directory.CreateDirectory(workingDirectory);
+                            }
+                            workdirCreated = true;
+                        }
+
+                        if (workdirCreated) {
+                            // Replace any special tags as necessary
+                            source = source.Replace("XX_WORKDIR_XX", workingDirectory);
+                        }
+
+                        m_log.Debug("[Python Source]: \n'" + source + "'\n");
+
+                        // Must be second line in file - "##alt""
+                        if (source.StartsWith("\n##alt", true, CultureInfo.InvariantCulture))
+						{
+							useAltEvents = 1;
+							source = source.Substring(6, source.Length - 6);
+                            m_log.Debug("[Python Source]: useAltEvents = " + useAltEvents + "\n");
+                            m_log.Debug("[Python Source]: \n'" + source + "'\n");
+                        }
+                        compileScript = CreatePYCompilerScript(
+                            source,
+                            m_scriptEngine.ScriptClassName,
+                            m_scriptEngine.ScriptBaseClassName,
+                            m_scriptEngine.ScriptBaseClassParameters,
+                            Path.Combine(
+                                Path.Combine(
+                                    m_scriptEngine.ScriptEnginePath,
+                                    m_scriptEngine.World.RegionInfo.RegionID.ToString()
+                                ),
+                                pythonSrcFileName
+                            ),
+							useAltEvents);
+                        break;
                     case enumCompileType.cs:
                         compileScript = CreateCSCompilerScript(
                             source,
@@ -436,6 +519,186 @@ namespace SecondLife
             sb.Append(string.Format("    }}\n}}\n"));
         }
 
+        public static string CreatePYCompilerScript(
+            string compileScript, string className, string baseClassName, ParameterInfo[] constructorParameters,
+            string fullPathToSrcFileName, int usingAltEvent)
+        {
+            // 'compileScript' is Python3 code at this point
+            // Write Python source code to file
+            try
+            {
+                File.WriteAllText(fullPathToSrcFileName, compileScript);
+                m_log.Debug("[Compiler]: Wrote Python source to file = \"" +
+                            fullPathToSrcFileName);
+            }
+            catch (Exception ex) //NOTLEGIT - Should be just FileIOException
+            {
+                m_log.Error("[Compiler]: Exception while " +
+                            "trying to write Python source to file \"" +
+                            fullPathToSrcFileName + "\": " + ex.ToString());
+            }
+
+			// Note: The python code is actually executed BEFORE the
+			// C# wrapper is created.  The C# wrapper ONLY wraps the
+			// OUTPUT of executed Python code!!
+
+			// Use the local installation of Python to execute the 
+			// Python source code written to file earlier.
+			Process process = new Process();
+
+			// This is only valid for Windows installation in the path shown
+            process.StartInfo.FileName = "C:\\Python3\\python3.exe";
+			// This is the path to Python source code
+            process.StartInfo.Arguments = fullPathToSrcFileName;
+            process.StartInfo.UseShellExecute = false;
+            process.StartInfo.RedirectStandardOutput = true;
+            process.StartInfo.RedirectStandardError = true;
+
+            process.Start();
+
+            StreamReader readerOut = process.StandardOutput;
+            StreamReader readerErr = process.StandardError;
+            string standardOutput = readerOut.ReadToEnd();
+            string standardError = readerErr.ReadToEnd();
+
+            //string name1 = llGetDisplayName(llDetectedKey(new LSL_Types.LSLInteger(0)));
+            //string name2 = llDetectedName(new LSL_Types.LSLInteger(0));
+
+            // Create C# wrapper containing the results generated
+            // by the python code.  This is done by creating 2 LSL
+            // events.  These events are state_entry and touch start.
+            if (usingAltEvent == 0) {
+				compileScript = string.Format(
+@"using OpenSim.Region.ScriptEngine.Shared;
+using System.Collections.Generic;
+using System.Diagnostics;
+
+namespace SecondLife
+{{
+	public class {0} : {1}
+	{{
+		public {0}({2}) : base({3}) {{}}
+
+		public void default_event_state_entry()
+		{{
+			opensim_reserved_CheckForCoopTermination();
+			llSay(new LSL_Types.LSLInteger(0), new LSL_Types.LSLString(""Python script running!\n""));
+		}}
+
+		public void default_event_touch_start(LSL_Types.LSLInteger total_number)
+		{{
+			opensim_reserved_CheckForCoopTermination();
+			llSay(new LSL_Types.LSLInteger(0), new LSL_Types.LSLString(""Executing Python Script!\n""));
+
+			if (!string.IsNullOrEmpty(""{4}""))
+			{{
+				llSay(new LSL_Types.LSLInteger(0), new LSL_Types.LSLString(""Output:\n{4}\n""));
+			}}
+
+			if (!string.IsNullOrEmpty(""{5}""))
+			{{
+				llSay(new LSL_Types.LSLInteger(0), new LSL_Types.LSLString(""Error:\n{5}\n""));
+			}}
+		}}
+	}}
+}}",
+					className,
+					baseClassName,
+					constructorParameters != null
+						? string.Join(", ", Array.ConvertAll<ParameterInfo, string>(constructorParameters, pi => pi.ToString()))
+						: "",
+					constructorParameters != null
+						? string.Join(", ", Array.ConvertAll<ParameterInfo, string>(constructorParameters, pi => pi.Name))
+						: "",
+					standardOutput.Replace("\n", "").Replace("\r", ""),
+					standardError.Replace("\n", "").Replace("\r", ""));
+
+			} else {			
+
+				compileScript = string.Format(
+@"using OpenSim.Region.ScriptEngine.Shared;
+using System.Collections.Generic;
+using System.Diagnostics;
+
+namespace SecondLife
+{{
+	public class {0} : {1}
+	{{
+		public {0}({2}) : base({3}) {{}}
+
+		public void default_event_state_entry()
+		{{
+			opensim_reserved_CheckForCoopTermination();
+			llSay(new LSL_Types.LSLInteger(0), new LSL_Types.LSLString(""Python script running!\n""));
+		}}
+
+		public void default_event_touch_start(LSL_Types.LSLInteger total_number)
+		{{
+			opensim_reserved_CheckForCoopTermination();
+
+            /***************
+            COMMENT THIS OUT FOR NOW
+            llSay(new LSL_Types.LSLInteger(0), new LSL_Types.LSLString(""Hi "" + llGetDisplayName(llDetectedKey(new LSL_Types.LSLInteger(0))) + ""!\n""));
+
+			llSay(new LSL_Types.LSLInteger(0), new LSL_Types.LSLString(""Hi "" + llDetectedName(new LSL_Types.LSLInteger(0)) + ""!\n""));
+ 
+			System.Diagnostics.Process insideProcess = new System.Diagnostics.Process();
+
+			// This is only valid for Windows installation in the path shown
+            insideProcess.StartInfo.FileName = ""C:\\Python3\\python3.exe"";
+			// This is the path to Python source code
+            insideProcess.StartInfo.Arguments = ""-c \\""print(\\\\""Hello {{}} from inside Python!\\\\"".format(\\\\"""" + llGetDisplayName(llDetectedKey(new LSL_Types.LSLInteger(0))) + ""\\\\""""))"";
+
+            insideProcess.StartInfo.UseShellExecute = false;
+            insideProcess.StartInfo.RedirectStandardOutput = true;
+            insideProcess.StartInfo.RedirectStandardError = true;
+
+            insideProcess.Start();
+
+            System.Diagnostics.StreamReader insideReaderOut = insideProcess.StandardOutput;
+            System.Diagnostics.StreamReader insideReaderErr = insideProcess.StandardError;
+            string insideStandardOutput = insideReaderOut.ReadToEnd();
+            string insideStandardError = insideReaderErr.ReadToEnd();
+
+			if (!string.IsNullOrEmpty(insideStandardOutput))
+			{{
+				llSay(new LSL_Types.LSLInteger(0), new LSL_Types.LSLString(""Inside Output:\n""+insideStandardOutput.Replace(""\\n"", """").Replace(""\\r"", """")+""\n""));
+			}}
+
+			if (!string.IsNullOrEmpty(insideStandardError))
+			{{
+				llSay(new LSL_Types.LSLInteger(0), new LSL_Types.LSLString(""Inside Error:\n""+insideStandardError.Replace(""\\n"", """").Replace(""\\r"", """")+""\n""));
+			}}
+           **********/
+
+			if (!string.IsNullOrEmpty(""{4}""))
+			{{
+				llSay(new LSL_Types.LSLInteger(0), new LSL_Types.LSLString(""Output:\n{4}\n""));
+			}}
+
+			if (!string.IsNullOrEmpty(""{5}""))
+			{{
+				llSay(new LSL_Types.LSLInteger(0), new LSL_Types.LSLString(""Error:\n{5}\n""));
+			}}
+		}}
+	}}
+}}",
+					className,
+					baseClassName,
+					constructorParameters != null
+						? string.Join(", ", Array.ConvertAll<ParameterInfo, string>(constructorParameters, pi => pi.ToString()))
+						: "",
+					constructorParameters != null
+						? string.Join(", ", Array.ConvertAll<ParameterInfo, string>(constructorParameters, pi => pi.Name))
+						: "",
+					standardOutput.Replace("\n", "").Replace("\r", ""),
+					standardError.Replace("\n", "").Replace("\r", ""));
+
+			}
+
+            return compileScript;
+        }
+
         public static string CreateCSCompilerScript(
             string compileScript, string className, string baseClassName, ParameterInfo[] constructorParameters)
         {
@@ -448,7 +711,7 @@ namespace SecondLife
     public class {0} : {1}
     {{
         public {0}({2}) : base({3}) {{}}
-{4}
+		{4}
     }}
 }}",
                 className,
@@ -484,7 +747,7 @@ namespace SecondLife
         /// <returns>Filename to .dll assembly</returns>
         internal string CompileFromDotNetText(string Script, enumCompileType lang, string asset, string assembly)
         {
-//            m_log.DebugFormat("[Compiler]: Compiling to assembly\n{0}", Script);
+            m_log.DebugFormat("[Compiler]: Compiling to assembly\n{0}", Script);
 
             string ext = "." + lang.ToString();
 
@@ -510,6 +773,11 @@ namespace SecondLife
             {
                 string srcFileName = FilePrefix + "_source_" +
                         Path.GetFileNameWithoutExtension(assembly) + ext;
+                Console.WriteLine("srcFileName: {0}\n", srcFileName);
+                Console.WriteLine("Full: {0}\n", Path.Combine(Path.Combine(
+                        ScriptEnginesPath,
+                        m_scriptEngine.World.RegionInfo.RegionID.ToString()),
+                        srcFileName));
                 try
                 {
                     File.WriteAllText(Path.Combine(Path.Combine(
@@ -555,6 +823,7 @@ namespace SecondLife
             CompilerResults results;
 
             CodeDomProvider provider;
+
             switch (lang)
             {
                 case enumCompileType.vb:
@@ -562,10 +831,16 @@ namespace SecondLife
                     break;
                 case enumCompileType.cs:
                 case enumCompileType.lsl:
+                case enumCompileType.py:
+					// Python code will be executed in a C# wrapper via the
+					// System.Diagnostics.Process Class.  This class provides
+					// access to local and remote processes and enables you
+					// to start and stop local system processes.  As a result,
+					// treat Python code as if its C# code.
                     provider = CodeDomProvider.CreateProvider("CSharp");
                     break;
                 default:
-                    throw new Exception("Compiler is not able to recongnize " +
+                    throw new Exception("Compiler is not able to recognize " +
                                         "language type \"" + lang.ToString() + "\"");
             }
 
@@ -633,7 +908,7 @@ namespace SecondLife
                             text = ReplaceTypes(CompErr.ErrorText);
 
                         // The Second Life viewer's script editor begins
-                        // countingn lines and columns at 0, so we subtract 1.
+                        // counting lines and columns at 0, so we subtract 1.
                         errtext += String.Format("({0},{1}): {4} {2}: {3}\n",
                                 errorPos.Key - 1, errorPos.Value - 1,
                                 CompErr.ErrorNumber, text, severity);
