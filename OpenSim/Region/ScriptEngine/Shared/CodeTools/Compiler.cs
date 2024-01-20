@@ -40,10 +40,11 @@ using log4net;
 using OpenSim.Region.Framework.Interfaces;
 using OpenSim.Region.ScriptEngine.Interfaces;
 using OpenMetaverse;
+
 using System.Diagnostics;
-using OpenSim.Region.ScriptEngine.Shared.ScriptBase;
-using static System.Net.Mime.MediaTypeNames;
 using System.Text.RegularExpressions;
+using SecondLife;
+using Python.Runtime;
 
 namespace OpenSim.Region.ScriptEngine.Shared.CodeTools
 {
@@ -63,7 +64,7 @@ namespace OpenSim.Region.ScriptEngine.Shared.CodeTools
             lsl = 0,
             cs = 1,
             vb = 2,
-			py = 3
+			py = 3  // Add an additional recognizable "compile type"
         }
 
         /// <summary>
@@ -125,10 +126,10 @@ namespace OpenSim.Region.ScriptEngine.Shared.CodeTools
             }
 
             // Map name and enum type of our supported languages
-            LanguageMapping.Add(enumCompileType.py.ToString(), enumCompileType.py);
             LanguageMapping.Add(enumCompileType.cs.ToString(), enumCompileType.cs);
             LanguageMapping.Add(enumCompileType.vb.ToString(), enumCompileType.vb);
             LanguageMapping.Add(enumCompileType.lsl.ToString(), enumCompileType.lsl);
+            LanguageMapping.Add(enumCompileType.py.ToString(), enumCompileType.py);
 
             // Allowed compilers
             string allowComp = m_scriptEngine.Config.GetString("AllowedCompilers", "lsl");
@@ -317,23 +318,43 @@ namespace OpenSim.Region.ScriptEngine.Shared.CodeTools
             {
                 language = enumCompileType.py;
                 // We need to remove //py (and ##py also, just for consistency).
-				// Python code won't execute with //py
+                // Python code won't execute with //py because it does not recognize '//' as a comment
 
-                source = source.Substring(4, source.Length - 4);
+                Regex regex = new Regex(@"((//|##)py\s*\n)");
+                Match match = regex.Match(source);
+                if (match.Success)
+                {
+                    string lineToRemove = match.Groups[1].Value;  // should be "//py"
+                    source = source.Replace(lineToRemove, "");
+                }
             }
-            if (source.StartsWith("//c#", true, CultureInfo.InvariantCulture))
+            else if (source.StartsWith("//c#", true, CultureInfo.InvariantCulture))
+            {
                 language = enumCompileType.cs;
-            if (source.StartsWith("//vb", true, CultureInfo.InvariantCulture))
+            }
+            else if (source.StartsWith("//vb", true, CultureInfo.InvariantCulture))
             {
                 language = enumCompileType.vb;
                 // We need to remove //vb, it won't compile with that
-
-                source = source.Substring(4, source.Length - 4);
+                Regex regex = new Regex(@"(//vb\s*\n)");
+                Match match = regex.Match(source);
+                if (match.Success)
+                {
+                    string lineToRemove = match.Groups[1].Value;
+                    source = source.Replace(lineToRemove, "");
+                }
             }
-            if (source.StartsWith("//lsl", true, CultureInfo.InvariantCulture))
+            else if (source.StartsWith("//lsl", true, CultureInfo.InvariantCulture))
+            {
                 language = enumCompileType.lsl;
+            }
+            else
+            {
+                language = enumCompileType.lsl;
+                m_log.DebugFormat("[Compiler]: Assuming script compile language is {0}", language);
+            }
 
-//            m_log.DebugFormat("[Compiler]: Compile language is {0}", language);
+            m_log.DebugFormat("[Compiler]: Compile language is {0}", language);
 
             if (!AllowedCompilers.ContainsKey(language.ToString()))
             {
@@ -353,102 +374,32 @@ namespace OpenSim.Region.ScriptEngine.Shared.CodeTools
 
             string compileScript = string.Empty;
 
-            if (language == enumCompileType.lsl)
+            if (language != enumCompileType.lsl)
             {
-                // Its LSL, convert it to C#
-
-                StringBuilder sb = new StringBuilder(16394);
-
-                LSL_Converter = (ICodeConverter)new CSCodeGenerator(comms, m_insertCoopTerminationCalls);
-                AddCSScriptHeader(
-                        m_scriptEngine.ScriptClassName,
-                        m_scriptEngine.ScriptBaseClassName,
-                        m_scriptEngine.ScriptBaseClassParameters,
-                        sb);
-
-                LSL_Converter.Convert(source,sb);
-                AddCSScriptTail(sb);
-                compileScript = sb.ToString();
-                // copy converter warnings into our warnings.
-                foreach (string warning in LSL_Converter.GetWarnings())
-                {
-                    AddWarning(warning);
-                }
-
-                linemap = ((CSCodeGenerator)LSL_Converter).PositionMap;
-                // Write the linemap to a file and save it in our dictionary for next time.
-                m_lineMaps[assembly] = linemap;
-                WriteMapFile(assembly + ".map", linemap);
-                LSL_Converter.Clear();
-            }
-            else
-            {
-				string pythonSrcFileName = string.Empty;
-				int useAltEvents = 0;
-				if (language == enumCompileType.py) {
-					pythonSrcFileName = Path.GetFileNameWithoutExtension(assembly).Replace("_compiled_", "_source_") +
-                                        "." + language.ToString();
-				}
-				
-                bool workdirCreated = false;
-                string workingDirectory = string.Empty;
                 switch (language)
                 {
                     case enumCompileType.py:
+                        string pythonSrcFileName = Path.GetFileNameWithoutExtension(assembly).Replace("_compiled_", "_source_") +
+                                            "." + language.ToString();
 
-                        //m_log.Debug("[Python Source]: Object ID - '" + asset + "'\n");
-                        //m_log.Debug("[Python Source]: Assembly - '" + assembly + "'\n");
+                        ////////////////////////////////////////////////////
+                        // Replace any special tags in Python source code
+                        source = LSLUtilities.ProcessSpecialTags(source);
 
-                        // Step 1: create new Regex.
-                        Regex regex = new Regex(@"XX_CREATEWORKDIR~(.*)_XX");
-
-                        // Step 2: call Match on Regex instance.
-                        Match match = regex.Match(source);
-
-                        // Step 3: test for Success.
-                        if (match.Success)
-                        {
-                            workingDirectory = match.Groups[1].Value;
-                            m_log.Debug("[Compiler]: workingDirectory - '" + workingDirectory + "'\n");
-                        }
-
-                        // Create a work directory for the object if necessary
-                        if (source.Contains("XX_CREATEWORKDIR~" + workingDirectory + "_XX")) {
-                            source = source.Replace("XX_CREATEWORKDIR~" + workingDirectory + "_XX", "");
-                            if(!Directory.Exists(workingDirectory)) {
-                                Directory.CreateDirectory(workingDirectory);
-                            }
-                            workdirCreated = true;
-                        }
-
-                        if (workdirCreated) {
-                            // Replace any special tags as necessary
-                            source = source.Replace("XX_WORKDIR_XX", workingDirectory);
-                        }
-
-                        m_log.Debug("[Python Source]: \n'" + source + "'\n");
-
-                        // Must be second line in file - "##alt""
-                        if (source.StartsWith("\n##alt", true, CultureInfo.InvariantCulture))
-						{
-							useAltEvents = 1;
-							source = source.Substring(6, source.Length - 6);
-                            m_log.Debug("[Python Source]: useAltEvents = " + useAltEvents + "\n");
-                            m_log.Debug("[Python Source]: \n'" + source + "'\n");
-                        }
+                        // Execute Python code and generate LSL script
                         compileScript = CreatePYCompilerScript(
                             source,
-                            m_scriptEngine.ScriptClassName,
-                            m_scriptEngine.ScriptBaseClassName,
-                            m_scriptEngine.ScriptBaseClassParameters,
                             Path.Combine(
                                 Path.Combine(
                                     m_scriptEngine.ScriptEnginePath,
                                     m_scriptEngine.World.RegionInfo.RegionID.ToString()
                                 ),
-                                pythonSrcFileName
-                            ),
-							useAltEvents);
+                                pythonSrcFileName)
+                            );
+
+                        // compileScript should now be lsl
+                        language = enumCompileType.lsl;
+                        source = compileScript;
                         break;
                     case enumCompileType.cs:
                         compileScript = CreateCSCompilerScript(
@@ -462,6 +413,38 @@ namespace OpenSim.Region.ScriptEngine.Shared.CodeTools
                             source, m_scriptEngine.ScriptClassName, m_scriptEngine.ScriptBaseClassName);
                         break;
                 }
+            }
+
+            if (language == enumCompileType.lsl)
+            {
+                // Its LSL, convert it to C#
+
+                StringBuilder sb = new StringBuilder(16394);
+
+                LSL_Converter = (ICodeConverter)new CSCodeGenerator(comms, m_insertCoopTerminationCalls);
+                AddCSScriptHeader(
+                        m_scriptEngine.ScriptClassName,
+                        m_scriptEngine.ScriptBaseClassName,
+                        m_scriptEngine.ScriptBaseClassParameters,
+                        sb);
+
+                LSL_Converter.Convert(source, sb);
+                AddCSScriptTail(sb);
+                compileScript = sb.ToString();
+
+                m_log.DebugFormat("[Compiler]: compileScript =\n{0}", compileScript);
+
+                // copy converter warnings into our warnings.
+                foreach (string warning in LSL_Converter.GetWarnings())
+                {
+                    AddWarning(warning);
+                }
+
+                linemap = ((CSCodeGenerator)LSL_Converter).PositionMap;
+                // Write the linemap to a file and save it in our dictionary for next time.
+                m_lineMaps[assembly] = linemap;
+                WriteMapFile(assembly + ".map", linemap);
+                LSL_Converter.Clear();
             }
 
             assembly = CompileFromDotNetText(compileScript, language, asset, assembly);
@@ -519,9 +502,7 @@ namespace SecondLife
             sb.Append(string.Format("    }}\n}}\n"));
         }
 
-        public static string CreatePYCompilerScript(
-            string compileScript, string className, string baseClassName, ParameterInfo[] constructorParameters,
-            string fullPathToSrcFileName, int usingAltEvent)
+        public static string CreatePYCompilerScript(string compileScript, string fullPathToSrcFileName)
         {
             // 'compileScript' is Python3 code at this point
             // Write Python source code to file
@@ -529,7 +510,7 @@ namespace SecondLife
             {
                 File.WriteAllText(fullPathToSrcFileName, compileScript);
                 m_log.Debug("[Compiler]: Wrote Python source to file = \"" +
-                            fullPathToSrcFileName);
+                            fullPathToSrcFileName + "\"");
             }
             catch (Exception ex) //NOTLEGIT - Should be just FileIOException
             {
@@ -538,163 +519,68 @@ namespace SecondLife
                             fullPathToSrcFileName + "\": " + ex.ToString());
             }
 
-			// Note: The python code is actually executed BEFORE the
-			// C# wrapper is created.  The C# wrapper ONLY wraps the
-			// OUTPUT of executed Python code!!
+            // Initialize PythonEngine so Python.NET can be used
+            if (!PythonEngine.IsInitialized)
+            {
+                Runtime.PythonDLL = LSLUtilities.m_PythonDLL;
+                PythonEngine.Initialize();
+                m_log.Debug("[Compiler]: ************* PythonEngine.Initialized *************");
+            }
 
-			// Use the local installation of Python to execute the 
-			// Python source code written to file earlier.
-			Process process = new Process();
+            // Prepare LSL path and file
+            fullPathToSrcFileName = fullPathToSrcFileName.Replace("\\", "\\\\");
 
-			// This is only valid for Windows installation in the path shown
-            process.StartInfo.FileName = "C:\\Python3\\python3.exe";
-			// This is the path to Python source code
-            process.StartInfo.Arguments = fullPathToSrcFileName;
-            process.StartInfo.UseShellExecute = false;
-            process.StartInfo.RedirectStandardOutput = true;
-            process.StartInfo.RedirectStandardError = true;
+            // Modify LSL file extension
+            string lslFile = fullPathToSrcFileName.Replace(".py", ".lsl");
 
-            process.Start();
+            // Take a guess at what Python variable name represents
+            // the generated LSL script by looking for the first use
+            // of an *_event_should_contain() class method.
+            string[] lines = compileScript.Split('\n');
+            string scriptVariableName = String.Empty;
+            foreach (var line in lines)
+            {
+                if (line.Contains("_event_should_contain("))
+                {
+                    int Start, End;
+                    Start = line.IndexOf("(", 0) + "(".Length;
+                    End = line.IndexOf(",", Start);
+                    scriptVariableName = line.Substring(Start, End - Start);
+                    m_log.Debug("[Compiler]: **** scriptVariableName **** = \"" + scriptVariableName + "\"");
+                    // Stop as soon as we find what we need
+                    break;
+                }
+            }
 
-            StreamReader readerOut = process.StandardOutput;
-            StreamReader readerErr = process.StandardError;
-            string standardOutput = readerOut.ReadToEnd();
-            string standardError = readerErr.ReadToEnd();
+            if (scriptVariableName == String.Empty)
+            {
+                throw new Exception("Unable to determine 'scriptVariableName' in Python code. " +
+                        "There must be at least 1 line in your Python code that says, " +
+                        "\"{some event}_event_should_contain(script, ...)\". Compile aborted");
+            }
 
-            //string name1 = llGetDisplayName(llDetectedKey(new LSL_Types.LSLInteger(0)));
-            //string name2 = llDetectedName(new LSL_Types.LSLInteger(0));
+            // Once found, add Python code to WriteScriptToLSLFile
+            compileScript += string.Format("\n\n___outputToFile___ = LSLUtilities()\n");
+            compileScript += string.Format("___outputToFile___.WriteScriptToLSLFile(\"{0}\", {1})\n",
+                lslFile, scriptVariableName);
 
-            // Create C# wrapper containing the results generated
-            // by the python code.  This is done by creating 2 LSL
-            // events.  These events are state_entry and touch start.
-            if (usingAltEvent == 0) {
-				compileScript = string.Format(
-@"using OpenSim.Region.ScriptEngine.Shared;
-using System.Collections.Generic;
-using System.Diagnostics;
+            m_log.Debug("[Compiler]: **** LSL relative path name **** = \"" + lslFile + "\"");
+            m_log.Debug("[Compiler]: **** Python compileScript **** = \"" + compileScript + "\"");
 
-namespace SecondLife
-{{
-	public class {0} : {1}
-	{{
-		public {0}({2}) : base({3}) {{}}
+            // Execute Python code to generate LSL script
+            PythonEngine.RunSimpleString(compileScript);
+            PythonEngine.Shutdown();
 
-		public void default_event_state_entry()
-		{{
-			opensim_reserved_CheckForCoopTermination();
-			llSay(new LSL_Types.LSLInteger(0), new LSL_Types.LSLString(""Python script running!\n""));
-		}}
-
-		public void default_event_touch_start(LSL_Types.LSLInteger total_number)
-		{{
-			opensim_reserved_CheckForCoopTermination();
-			llSay(new LSL_Types.LSLInteger(0), new LSL_Types.LSLString(""Executing Python Script!\n""));
-
-			if (!string.IsNullOrEmpty(""{4}""))
-			{{
-				llSay(new LSL_Types.LSLInteger(0), new LSL_Types.LSLString(""Output:\n{4}\n""));
-			}}
-
-			if (!string.IsNullOrEmpty(""{5}""))
-			{{
-				llSay(new LSL_Types.LSLInteger(0), new LSL_Types.LSLString(""Error:\n{5}\n""));
-			}}
-		}}
-	}}
-}}",
-					className,
-					baseClassName,
-					constructorParameters != null
-						? string.Join(", ", Array.ConvertAll<ParameterInfo, string>(constructorParameters, pi => pi.ToString()))
-						: "",
-					constructorParameters != null
-						? string.Join(", ", Array.ConvertAll<ParameterInfo, string>(constructorParameters, pi => pi.Name))
-						: "",
-					standardOutput.Replace("\n", "").Replace("\r", ""),
-					standardError.Replace("\n", "").Replace("\r", ""));
-
-			} else {			
-
-				compileScript = string.Format(
-@"using OpenSim.Region.ScriptEngine.Shared;
-using System.Collections.Generic;
-using System.Diagnostics;
-
-namespace SecondLife
-{{
-	public class {0} : {1}
-	{{
-		public {0}({2}) : base({3}) {{}}
-
-		public void default_event_state_entry()
-		{{
-			opensim_reserved_CheckForCoopTermination();
-			llSay(new LSL_Types.LSLInteger(0), new LSL_Types.LSLString(""Python script running!\n""));
-		}}
-
-		public void default_event_touch_start(LSL_Types.LSLInteger total_number)
-		{{
-			opensim_reserved_CheckForCoopTermination();
-
-            /***************
-            COMMENT THIS OUT FOR NOW
-            llSay(new LSL_Types.LSLInteger(0), new LSL_Types.LSLString(""Hi "" + llGetDisplayName(llDetectedKey(new LSL_Types.LSLInteger(0))) + ""!\n""));
-
-			llSay(new LSL_Types.LSLInteger(0), new LSL_Types.LSLString(""Hi "" + llDetectedName(new LSL_Types.LSLInteger(0)) + ""!\n""));
- 
-			System.Diagnostics.Process insideProcess = new System.Diagnostics.Process();
-
-			// This is only valid for Windows installation in the path shown
-            insideProcess.StartInfo.FileName = ""C:\\Python3\\python3.exe"";
-			// This is the path to Python source code
-            insideProcess.StartInfo.Arguments = ""-c \\""print(\\\\""Hello {{}} from inside Python!\\\\"".format(\\\\"""" + llGetDisplayName(llDetectedKey(new LSL_Types.LSLInteger(0))) + ""\\\\""""))"";
-
-            insideProcess.StartInfo.UseShellExecute = false;
-            insideProcess.StartInfo.RedirectStandardOutput = true;
-            insideProcess.StartInfo.RedirectStandardError = true;
-
-            insideProcess.Start();
-
-            System.Diagnostics.StreamReader insideReaderOut = insideProcess.StandardOutput;
-            System.Diagnostics.StreamReader insideReaderErr = insideProcess.StandardError;
-            string insideStandardOutput = insideReaderOut.ReadToEnd();
-            string insideStandardError = insideReaderErr.ReadToEnd();
-
-			if (!string.IsNullOrEmpty(insideStandardOutput))
-			{{
-				llSay(new LSL_Types.LSLInteger(0), new LSL_Types.LSLString(""Inside Output:\n""+insideStandardOutput.Replace(""\\n"", """").Replace(""\\r"", """")+""\n""));
-			}}
-
-			if (!string.IsNullOrEmpty(insideStandardError))
-			{{
-				llSay(new LSL_Types.LSLInteger(0), new LSL_Types.LSLString(""Inside Error:\n""+insideStandardError.Replace(""\\n"", """").Replace(""\\r"", """")+""\n""));
-			}}
-           **********/
-
-			if (!string.IsNullOrEmpty(""{4}""))
-			{{
-				llSay(new LSL_Types.LSLInteger(0), new LSL_Types.LSLString(""Output:\n{4}\n""));
-			}}
-
-			if (!string.IsNullOrEmpty(""{5}""))
-			{{
-				llSay(new LSL_Types.LSLInteger(0), new LSL_Types.LSLString(""Error:\n{5}\n""));
-			}}
-		}}
-	}}
-}}",
-					className,
-					baseClassName,
-					constructorParameters != null
-						? string.Join(", ", Array.ConvertAll<ParameterInfo, string>(constructorParameters, pi => pi.ToString()))
-						: "",
-					constructorParameters != null
-						? string.Join(", ", Array.ConvertAll<ParameterInfo, string>(constructorParameters, pi => pi.Name))
-						: "",
-					standardOutput.Replace("\n", "").Replace("\r", ""),
-					standardError.Replace("\n", "").Replace("\r", ""));
-
-			}
+            // Ideally, we would have wanted to capture the Python-generated
+            // LSL script (stdout) into a C# variable inside this code and
+            // avoid writing it to a file. However, that did workout as
+            // planned. As a result, read the LSL file back into the C# variable.
+            if (File.Exists(lslFile))
+            {
+                // Open the file to read from.
+                compileScript = File.ReadAllText(lslFile);
+                m_log.Debug("[Compiler]: **** LSL compileScript **** = \"" + compileScript + "\"");
+            }
 
             return compileScript;
         }
@@ -747,7 +633,9 @@ namespace SecondLife
         /// <returns>Filename to .dll assembly</returns>
         internal string CompileFromDotNetText(string Script, enumCompileType lang, string asset, string assembly)
         {
-            m_log.DebugFormat("[Compiler]: Compiling to assembly\n{0}", Script);
+            //m_log.DebugFormat("[Compiler]: Compiling to assembly\n{0}", Script);
+            //m_log.DebugFormat("[Compiler]: This is the assembly\n{0}", assembly);
+            m_log.DebugFormat("[Compiler]: CompileFromDotNetText - lang = {0}\n\n", lang);
 
             string ext = "." + lang.ToString();
 
@@ -773,11 +661,11 @@ namespace SecondLife
             {
                 string srcFileName = FilePrefix + "_source_" +
                         Path.GetFileNameWithoutExtension(assembly) + ext;
-                Console.WriteLine("srcFileName: {0}\n", srcFileName);
-                Console.WriteLine("Full: {0}\n", Path.Combine(Path.Combine(
+                m_log.Debug("[Compiler]: srcFileName = " + srcFileName + "\n");
+                m_log.Debug("[Compiler]: Full = " + Path.Combine(Path.Combine(
                         ScriptEnginesPath,
                         m_scriptEngine.World.RegionInfo.RegionID.ToString()),
-                        srcFileName));
+                        srcFileName) + "\n");
                 try
                 {
                     File.WriteAllText(Path.Combine(Path.Combine(
