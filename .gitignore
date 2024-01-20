@@ -137,7 +137,6 @@ OpenSim/Region/ScriptEngine/Shared/Api/Implementation/obj/
 OpenSim/Region/ScriptEngine/Shared/Api/Runtime/OpenSim.Region.ScriptEngine.Shared.Api.Runtime.csproj
 OpenSim/Region/ScriptEngine/Shared/Api/Runtime/OpenSim.Region.ScriptEngine.Shared.Api.Runtime.csproj.user
 OpenSim/Region/ScriptEngine/Shared/Api/Runtime/obj/
-OpenSim/Region/ScriptEngine/Shared/CodeTools/OpenSim.Region.ScriptEngine.Shared.CodeTools.csproj
 OpenSim/Region/ScriptEngine/Shared/CodeTools/OpenSim.Region.ScriptEngine.Shared.CodeTools.csproj.user
 OpenSim/Region/ScriptEngine/Shared/CodeTools/obj/
 OpenSim/Region/ScriptEngine/Shared/Instance/OpenSim.Region.ScriptEngine.Shared.Instance.csproj
@@ -479,3 +478,8 @@ bin/maptiles/
 bin/userprofiles.db
 share/32BitLaunch/OpenSim.32BitLaunch/obj/
 share/32BitLaunch/Robust.32BitLaunch/obj/
+/bin/mel.lsl
+/OpenSim/Region/ScriptEngine/Shared/CodeTools/Compiler - backup1
+/bin/Python.Runtime.pdb
+/bin/Python.Runtime.xml
+/OpenSim.sln.cache
