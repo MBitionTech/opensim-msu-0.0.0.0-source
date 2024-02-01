@@ -476,10 +476,9 @@ bin/griduser.db
 bin/inventory.db
 bin/maptiles/
 bin/userprofiles.db
+bin/mel.lsl
+bin/Python/__pycache__/
 share/32BitLaunch/OpenSim.32BitLaunch/obj/
 share/32BitLaunch/Robust.32BitLaunch/obj/
-/bin/mel.lsl
 /OpenSim/Region/ScriptEngine/Shared/CodeTools/Compiler - backup1
-/bin/Python.Runtime.pdb
-/bin/Python.Runtime.xml
 /OpenSim.sln.cache

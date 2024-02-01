@@ -52,6 +52,8 @@ namespace OpenSim.Region.ScriptEngine.Shared.CodeTools
     {
         private static readonly ILog m_log = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
 
+        private static LSLUtilities m_lslUtilities = new LSLUtilities();
+
         // * Uses "LSL2Converter" to convert LSL to C# if necessary.
         // * Compiles C#-code into an assembly
         // * Returns assembly name ready for AppDomain load.
@@ -384,7 +386,7 @@ namespace OpenSim.Region.ScriptEngine.Shared.CodeTools
 
                         ////////////////////////////////////////////////////
                         // Replace any special tags in Python source code
-                        source = LSLUtilities.ProcessSpecialTags(source);
+                        source = m_lslUtilities.ProcessSpecialTags(source);
 
                         // Execute Python code and generate LSL script
                         compileScript = CreatePYCompilerScript(
@@ -397,9 +399,16 @@ namespace OpenSim.Region.ScriptEngine.Shared.CodeTools
                                 pythonSrcFileName)
                             );
 
-                        // compileScript should now be lsl
+                        // compileScript should now be lsl file.
+                        // It will convert 3 special keywords as appropriate
+                        // before generating the file. Replace special characters
+                        compileScript = compileScript.Replace("__obrace__", "{");
+                        compileScript = compileScript.Replace("__cbrace__", "}");
+                        compileScript = compileScript.Replace("__dquote__", "\"");
+
                         language = enumCompileType.lsl;
                         source = compileScript;
+                        m_log.DebugFormat("[Compiler]: compileScript generated from python =\n{0}", compileScript);
                         break;
                     case enumCompileType.cs:
                         compileScript = CreateCSCompilerScript(
@@ -527,61 +536,39 @@ namespace SecondLife
                 m_log.Debug("[Compiler]: ************* PythonEngine.Initialized *************");
             }
 
-            // Prepare LSL path and file
-            fullPathToSrcFileName = fullPathToSrcFileName.Replace("\\", "\\\\");
+            // Add the following to the Python code and retrieve LSL
+            string addStr = "\n\nfrom io import StringIO\n";
+            addStr += "import sys\n";
+            addStr += "tmp=sys.stdout\n";
+            addStr += "my_result=StringIO()\n";
+            addStr += "sys.stdout=my_result\n";
+            addStr += "print(f\"{getScript()}\")\n";
+            addStr += "strOutput=my_result.getvalue()\n";
+            addStr += "sys.stdout=tmp\n";
+            compileScript += addStr;
+            m_log.Debug("[Compiler]: **~~ Modified compileScript ~~** = \"" + compileScript + "\"");
 
-            // Modify LSL file extension
-            string lslFile = fullPathToSrcFileName.Replace(".py", ".lsl");
-
-            // Take a guess at what Python variable name represents
-            // the generated LSL script by looking for the first use
-            // of an *_event_should_contain() class method.
-            string[] lines = compileScript.Split('\n');
-            string scriptVariableName = String.Empty;
-            foreach (var line in lines)
+            string outputText = String.Empty;
+            using (Py.GIL())
             {
-                if (line.Contains("_event_should_contain("))
+                var scope = Py.CreateScope();
+                try
                 {
-                    int Start, End;
-                    Start = line.IndexOf("(", 0) + "(".Length;
-                    End = line.IndexOf(",", Start);
-                    scriptVariableName = line.Substring(Start, End - Start);
-                    m_log.Debug("[Compiler]: **** scriptVariableName **** = \"" + scriptVariableName + "\"");
-                    // Stop as soon as we find what we need
-                    break;
+                    // Execute Python code to generate LSL script
+                    scope.Exec(compileScript);
+                    var x = scope.Get("strOutput");
+                    outputText = x.ToString();
+                    m_log.Debug("[Compiler]: **** outputText **** = \"" + outputText + "\"");
+                }
+                catch (Exception e)
+                {
+                    throw new Exception("[Compiler]: ERROR - Compile aborted: " +
+                            e.ToString());
                 }
             }
-
-            if (scriptVariableName == String.Empty)
-            {
-                throw new Exception("Unable to determine 'scriptVariableName' in Python code. " +
-                        "There must be at least 1 line in your Python code that says, " +
-                        "\"{some event}_event_should_contain(script, ...)\". Compile aborted");
-            }
-
-            // Once found, add Python code to WriteScriptToLSLFile
-            compileScript += string.Format("\n\n___outputToFile___ = LSLUtilities()\n");
-            compileScript += string.Format("___outputToFile___.WriteScriptToLSLFile(\"{0}\", {1})\n",
-                lslFile, scriptVariableName);
-
-            m_log.Debug("[Compiler]: **** LSL relative path name **** = \"" + lslFile + "\"");
-            m_log.Debug("[Compiler]: **** Python compileScript **** = \"" + compileScript + "\"");
-
-            // Execute Python code to generate LSL script
-            PythonEngine.RunSimpleString(compileScript);
             PythonEngine.Shutdown();
 
-            // Ideally, we would have wanted to capture the Python-generated
-            // LSL script (stdout) into a C# variable inside this code and
-            // avoid writing it to a file. However, that did workout as
-            // planned. As a result, read the LSL file back into the C# variable.
-            if (File.Exists(lslFile))
-            {
-                // Open the file to read from.
-                compileScript = File.ReadAllText(lslFile);
-                m_log.Debug("[Compiler]: **** LSL compileScript **** = \"" + compileScript + "\"");
-            }
-
+            compileScript = outputText;
             return compileScript;
         }
 
