@@ -45,6 +45,8 @@ using System.Diagnostics;
 using System.Text.RegularExpressions;
 using SecondLife;
 using Python.Runtime;
+using static OpenSim.Region.ScriptEngine.Shared.LSL_Types;
+using System.Runtime.ConstrainedExecution;
 
 namespace OpenSim.Region.ScriptEngine.Shared.CodeTools
 {
@@ -384,10 +386,6 @@ namespace OpenSim.Region.ScriptEngine.Shared.CodeTools
                         string pythonSrcFileName = Path.GetFileNameWithoutExtension(assembly).Replace("_compiled_", "_source_") +
                                             "." + language.ToString();
 
-                        ////////////////////////////////////////////////////
-                        // Replace any special tags in Python source code
-                        source = m_lslUtilities.ProcessSpecialTags(source);
-
                         // Execute Python code and generate LSL script
                         compileScript = CreatePYCompilerScript(
                             source,
@@ -398,13 +396,6 @@ namespace OpenSim.Region.ScriptEngine.Shared.CodeTools
                                 ),
                                 pythonSrcFileName)
                             );
-
-                        // compileScript should now be lsl file.
-                        // It will convert 3 special keywords as appropriate
-                        // before generating the file. Replace special characters
-                        compileScript = compileScript.Replace("__obrace__", "{");
-                        compileScript = compileScript.Replace("__cbrace__", "}");
-                        compileScript = compileScript.Replace("__dquote__", "\"");
 
                         language = enumCompileType.lsl;
                         source = compileScript;
@@ -514,7 +505,92 @@ namespace SecondLife
         public static string CreatePYCompilerScript(string compileScript, string fullPathToSrcFileName)
         {
             // 'compileScript' is Python3 code at this point
-            // Write Python source code to file
+            string tab = "    ";
+
+            // Add the following to the Python code and retrieve LSL
+            //string importStr = "\r\nfrom ast import literal_eval\n";
+            string importStr = "";
+            importStr += "from io import StringIO\n";
+            importStr += "import os\n";
+            importStr += "import sys\n"; 
+            importStr += "sys.path.append(os.getcwd())  # Required for successful import below\n";
+            importStr += "import traceback\n";
+            importStr += "import inspect\n";
+            importStr += "import clr\n";
+            importStr += "clr.AddReference(\"OpenSim.Region.ScriptEngine.Shared.CodeTools\")\n";
+            importStr += "from SecondLife import LSLUtilities\n";
+            importStr += "clr.AddReference(\"OpenSim.Region.ScriptEngine.Shared.Api.Runtime\")\n";
+            importStr += "from OpenSim.Region.ScriptEngine.Shared.ScriptBase import ScriptBaseClass\n";
+            importStr += "from Python.LSLpkg.LSLEvents import Events, getScript, resetScript\n";
+            importStr += "from Python.LSLpkg.LSLFunc import Func, key, rotation, vector\n";
+            importStr += "from Python.LSLpkg.LSLConst import CONST\n\n";
+            //m_log.Debug("[Compiler]: **** importStr **** = \"\n" + importStr + "\"\n");
+
+            string tryScript = "try:\n";
+
+            string tabbedCompileScript = string.Empty;
+            //string tempCompileScript = string.Empty;
+            using (StringReader reader = new StringReader(compileScript))
+            {
+                string line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    tabbedCompileScript += String.Format("{0}{1}\n", tab, line);
+                    //tempCompileScript += String.Format("{0}{1}", tab, line);
+                }
+            }
+
+            //m_log.Debug("[Compiler]: **** tabbedCompileScript **** = \"\n" + tabbedCompileScript + "\"\n");
+
+            string outStr = "\n\n";
+            outStr += String.Format("{0}tmp1234567890=sys.stdout\n", tab);
+            outStr += String.Format("{0}stdout_result=StringIO()\n", tab);
+            outStr += String.Format("{0}sys.stdout=stdout_result\n", tab);
+            outStr += String.Format("{0}print(f\"{{getScript()}}\")\n", tab);
+            outStr += String.Format("{0}internallyGrabLSLScript=stdout_result.getvalue()\n", tab);
+            outStr += String.Format("{0}sys.stdout=tmp1234567890\n", tab);
+
+            //m_log.Debug("[Compiler]: **** outStr **** = \"\n" + outStr + "\"\n");
+
+            string tailStr = "";
+            tailStr += "except Exception:\n";
+            tailStr += String.Format("{0}tmp9876543210=sys.stdout\n", tab);
+            tailStr += String.Format("{0}stderr_result=StringIO()\n", tab);
+            tailStr += String.Format("{0}sys.stdout=stderr_result\n", tab);
+            tailStr += String.Format("{0}print(f\"Traceback Error: {{traceback.format_exc()}}\")\n", tab);
+            tailStr += String.Format("{0}internallyGrabErrOutput=stderr_result.getvalue()\n", tab);
+            tailStr += String.Format("{0}sys.stdout=tmp9876543210\n", tab);
+            //m_log.Debug("[Compiler]: **** tailStr **** = \"\n" + tailStr + "\"\n");
+
+            // Add imports and wrap final python script in try/except block
+            compileScript = importStr + tryScript + tabbedCompileScript + outStr + tailStr;
+            //string checkSyntaxScript = "from ast import literal_eval\n" + importStr + tryScript;
+            //checkSyntaxScript += String.Format("{0}literal_eval{1}\n",tab,tempCompileScript);
+
+            /*string testScript = String.Format(
+@"from io import StringIO
+from ast import literal_eval
+try:
+literal_eval({0})
+except SyntaxError as e:
+tmp=sys.stdout
+my_result=StringIO()
+sys.stdout=my_result
+print(f""{{}}  args:{{}}"", e.message, e.args)
+syntax=my_result.getvalue()
+sys.stdout=tmp
+", compileScript);
+            */
+
+            ////////////////////////////////////////////////////
+            // Replace any special tags in Python source code
+            compileScript = m_lslUtilities.ProcessSpecialTags(compileScript);
+
+            m_log.Debug("[Compiler]: **~~ Modified PYTHON compileScript ~~** = \"\n" + compileScript + "\"");
+
+            ////////////////////////////////////////////////////
+            // Write Python source code to file, in
+            // case user would like to review
             try
             {
                 File.WriteAllText(fullPathToSrcFileName, compileScript);
@@ -527,7 +603,9 @@ namespace SecondLife
                             "trying to write Python source to file \"" +
                             fullPathToSrcFileName + "\": " + ex.ToString());
             }
+            ////////////////////////////////////////////////////
 
+            ////////////////////////////////////////////////////
             // Initialize PythonEngine so Python.NET can be used
             if (!PythonEngine.IsInitialized)
             {
@@ -536,46 +614,68 @@ namespace SecondLife
                 m_log.Debug("[Compiler]: ************* PythonEngine.Initialized *************");
             }
 
-            // Add the following to the Python code and retrieve LSL
-            string addStr = "\n\nfrom io import StringIO\n";
-            addStr += "import sys\n";
-            addStr += "tmp=sys.stdout\n";
-            addStr += "my_result=StringIO()\n";
-            addStr += "sys.stdout=my_result\n";
-            addStr += "print(f\"{getScript()}\")\n";
-            addStr += "strOutput=my_result.getvalue()\n";
-            addStr += "sys.stdout=tmp\n";
-            compileScript += addStr;
-            m_log.Debug("[Compiler]: **~~ Modified compileScript ~~** = \"" + compileScript + "\"");
-
-            string outputText = String.Empty;
+            string finalLSLScript = String.Empty;
+            string anyPythonErrors = String.Empty;
             using (Py.GIL())
             {
                 var scope = Py.CreateScope();
+
+                // Execute Python code to generate LSL script
+                scope.Exec(compileScript);
+
                 try
                 {
-                    // Execute Python code to generate LSL script
-                    scope.Exec(compileScript);
-                    var x = scope.Get("strOutput");
-                    outputText = x.ToString();
-                    m_log.Debug("[Compiler]: **** outputText **** = \"" + outputText + "\"");
+                    var x = scope.Get("internallyGrabLSLScript");  // This can throw KeyNotFoundException
+                    finalLSLScript = x.ToString();
                 }
-                catch (Exception e)
+                catch (KeyNotFoundException pythonExceptionOccurred)
                 {
-                    throw new Exception("[Compiler]: ERROR - Compile aborted: " +
-                            e.ToString());
+                    finalLSLScript = String.Format("default\n{\n{1}state_entry()\n{\n{1}{1}llSay(0,\"[PYTHON ERROR]: {0}\");\n{1}{1}}\n}\n",
+                        pythonExceptionOccurred.ToString().Split('\n')[0], tab);
+                    m_log.Debug("[Compiler]: **** finalLSLScript (Error) **** = \"\n" + finalLSLScript + "\"\n");
+                    m_log.Error("[Compiler]: ERROR - Python execution aborted: " + pythonExceptionOccurred.ToString());
+
+                    // Try to retrieve the error message
+                    try
+                    {
+                        var y = scope.Get("internallyGrabErrOutput");  // This can throw KeyNotFoundException
+                        anyPythonErrors = y.ToString();
+                    }
+                    catch (KeyNotFoundException unretrievableExceptionOccurred)
+                    {
+                        //m_log.Error("[Compiler]: **** anyPythonErrors **** = \"\n" + anyPythonErrors + "\"\n");
+
+                        string msg = "[Compiler]: Unretrievable Exception Occurred. Aborted: " +
+                            unretrievableExceptionOccurred.ToString();
+                        m_log.Error(msg);
+
+                        string tab2 = "    ";
+                        finalLSLScript = String.Format("default\n{\n{1}state_entry()\n{\n{1}{1}llSay(0,\"[PYTHON ERROR]: {0}\");\n{1}{1}}\n}\n",
+                            unretrievableExceptionOccurred.ToString().Split('\n')[0], tab2);
+                        m_log.Debug("[Compiler]: **** finalLSLScript (Error) **** = \"\n" + finalLSLScript + "\"\n");
+                        //throw new Exception(msg);
+                    }
                 }
             }
             PythonEngine.Shutdown();
 
-            compileScript = outputText;
+            // compileScript should now be lsl file.
+            // It will convert 3 special keywords as appropriate
+            // before generating the file. Replace special characters
+            finalLSLScript = finalLSLScript.Replace("__obrace__", "{");
+            finalLSLScript = finalLSLScript.Replace("__cbrace__", "}");
+            finalLSLScript = finalLSLScript.Replace("__dquote__", "\"");
+
+            m_log.Debug("[Compiler]: **** finalLSLScript **** = \"\n" + finalLSLScript + "\"\n");
+
+            compileScript = finalLSLScript;
             return compileScript;
         }
 
         public static string CreateCSCompilerScript(
             string compileScript, string className, string baseClassName, ParameterInfo[] constructorParameters)
         {
-            compileScript = string.Format(
+            compileScript = String.Format(
 @"using OpenSim.Region.ScriptEngine.Shared;
 using System.Collections.Generic;
 

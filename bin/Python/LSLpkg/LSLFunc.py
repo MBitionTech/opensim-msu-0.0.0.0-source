@@ -11,7 +11,7 @@ class key:
             raise ValueError("Value should be in the form of a string")
 
         # Note: key can also be an empty string
-        p = re.compile('[a-zA-Z\d]{8}-[a-zA-Z\d]{4}-[a-zA-Z\d]{4}-[a-zA-Z\d]{4}-[a-zA-Z\d]{12}|^$')
+        p = re.compile('[a-fA-F\d]{8}-[a-fA-F\d]{4}-[a-fA-F\d]{4}-[a-fA-F\d]{4}-[a-fA-F\d]{12}|^$')
         if p.match(uuid) is None:        
             raise ValueError("UUID value is not formatted correctly")
 
@@ -60,7 +60,7 @@ class vector:
             
         p = re.compile('\<\s*([+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)\s*,\s*){2}\s*[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)\s*\>')
         if p.match(vector) is None:
-            raise ValueError("{{{}}} value is not formatted correctly".format(inspect.currentframe().f_code.co_name))
+            raise ValueError("{{{}}} value is not formatted correctly: {}".format(inspect.currentframe().f_code.co_name,vector))
 
         q = re.compile('\<(.+)\>')
         m = q.match(vector)
