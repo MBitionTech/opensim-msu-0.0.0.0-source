@@ -15,101 +15,6 @@
 # behavior to Second Life primitives, objects, and avatars. For the 39
 # LSL events defined below, a "LSL script" can be generated following
 # its basic structure defined here; https://wiki.secondlife.com/wiki/State
-# 
-# For example;
-# default
-# {
-#     state_entry()
-#     {
-#         llSay(0,
-#             "You either just saved the script after editing it"
-#             + "\nand/or the script (re)entered the default state.");
-#
-#         // white and opaque text
-#         llSetText("Click to change states", <1.0, 1.0, 1.0>, (float)TRUE);
-#     }
-#
-#     touch_end(integer num_detected)
-#     {
-#         // Note: NEVER do a state change from within a touch_start event -
-#         // - that can lead to the next touch_start on return to this state to be missed.
-#         // Here we do the state change safely, from within touch_end
-#         state two;
-#     }
-#
-#     state_exit()
-#     {
-#         llSay(0, "The script leaves the default state.");
-#     }
-# }
-#
-# state two
-# {
-#     state_entry()
-#     {
-#         llSay(0, "The script entered state 'two'");
-#         state default;
-#     }
-#
-#     state_exit()
-#     {
-#         llSay(0, "The script leaves state 'two'");
-#     }
-# }
-#
-########################################################################
-# Typical Python usage inside OpenSimulator would be similar to this;
-# (Note: The generated LSL script is not intended to be functional)
-#
-# //py
-# import os
-# import sys
-# import clr
-# import inspect
-# import Python.LSL as LSL
-# clr.AddReference("OpenSim.Region.ScriptEngine.Shared.CodeTools")
-# from SecondLife import LSLUtilities
-#
-# # Instantiate the SecondLife.LSLUtilities class
-# utils = LSLUtilities()
-# utils.lsl_log("******************** Success FOR PYTHON.NET ********************\\n")
-#
-# # Instantiate the Events class
-# script = ""
-# lsl = Events("default")
-# script, args = lsl.state_entry(script)
-# script = lsl.state_entry_event_should_contain(script, "llSay(0, __dquote__Script Running!__dquote__);\n")
-#
-# script, args = lsl.timer(script)
-#
-# script, func_name = lsl.add_function(script, "ShowAbsolute", [["integer inputInteger"], ["string inputStr"]])
-# script = lsl.function_should_contain(func_name, script, "string output = __dquote__llAbs()__dquote__ + \
-# (string)inputInteger + __dquote__) --> __dquote__ + (string)llAbs(inputInteger);\n")
-#
-# script = lsl.function_add_newline(func_name, script)
-# script = lsl.function_should_contain(func_name, script, "llSay(PUBLIC_CHANNEL, output);\n")
-# script = lsl.timer_event_should_contain(script, "llSay(PUBLIC_CHANNEL, __dquote__The absolute value of -4 is: __dquote__ + (string)llAbs(-4) );\n");
-# script, args = lsl.state_exit(script)
-#
-# lsl2 = Events("two")
-# script, args = lsl2.state_entry(script)
-# script = lsl2.state_entry_event_should_contain(script, "llSay(0, __dquote__How are ya?__dquote__);\n")
-#
-# script, args = lsl2.touch_start(script, "num_detected")
-#
-# script, args = lsl2.listen(script, "channel", "name", "_id", "message")
-#
-# script, args = lsl2.state_exit(script)
-# utils.lsl_log("\n" + script)
-#
-# # The WriteScriptToLSLFile() C# utility function is defined to write the "script"
-# # to a file.  It will convert 3 special keywords as appropriate before
-# # generating the file.  They are;
-# # Replace("__obrace__", "{");
-# # Replace("__cbrace__", "}");
-# # Replace("__dquote__", "\"");
-# utils.WriteScriptToLSLFile("{0}", script)
-#
 ########################################################################
 import os
 import sys
@@ -123,9 +28,8 @@ from .LSLConst import CONST
 # or classes and need an object or class instance to be invoked.
 ########################################################################
 
-
 ####################################
-# Variables
+# Global Variable
 ####################################
 script = ""
 
@@ -138,17 +42,19 @@ def resetScript():
     
 def getScript():
     global script
-    #print(f"getScript = \n{script}\n")
-    return script;
+    script = script.replace("__obrace__", "{")
+    script = script.replace("__cbrace__", "}")
+    script = script.replace("__dquote__", "\"")
+    return script
 
 def setScript(scr):
     global script
-    script = scr;
-    #print(f"setScript = \n{script}\n")
+    script = scr
 
 def write_to_file(fullPathToSrcFileName, content_to_write):
     # Open the file in write mode ('w')
-    # If the file doesn't exist, it will be created. If it does exist, its contents will be overwritten.
+    # If the file doesn't exist, it will be created.
+    # If it does exist, its contents will be overwritten.
     with open(fullPathToSrcFileName, 'w') as file:
         # Write the string to the file
         file.write(content_to_write)
@@ -196,9 +102,9 @@ class Events:
         self.statePrinted = False
         Events.__EVarray[self.stateName] = self.statePrinted
 
-    def __str__(self):
-        self.statePrinted = True
-        Events.__EVarray[self.stateName] = self.statePrinted
+    #def __str__(self):
+        ##self.statePrinted = True
+        ##Events.__EVarray[self.stateName] = self.statePrinted
         #contents = f"{self.stateName}\n{{\n}}  // End of '{self.stateName}' state\n\n"
         
         #setScript(contents)
