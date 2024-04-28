@@ -1,4 +1,4 @@
-﻿<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="14.0">
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="14.0">
   <PropertyGroup>
     <ProjectType>Local</ProjectType>
     <ProductVersion>14.0.23107.0</ProductVersion>
@@ -120,7 +120,7 @@
     <Reference Include="netstandard" />
     <Reference Include="Python.Runtime">
       <Name>Python.Runtime</Name>
-      <HintPath>C:\Users\MBayne\AppData\Local\Programs\Python\Python39\Lib\site-packages\pythonnet\runtime\Python.Runtime.dll</HintPath>
+      <HintPath>C:\Python\Python312\Lib\site-packages\pythonnet\runtime\Python.Runtime.dll</HintPath>
     </Reference>
   </ItemGroup>
   <ItemGroup>
